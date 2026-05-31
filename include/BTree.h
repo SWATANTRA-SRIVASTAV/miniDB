@@ -4,23 +4,28 @@
 #include <optional>
 #include <vector>
 
-// Layout inside a BTree page (all offsets in bytes):
-//  [0]      uint8_t   is_leaf   (1 = leaf, 0 = internal)
-//  [1..4]   uint32_t  num_keys
-//  [5..8]   uint32_t  parent_page_id
-//  Keys/values start at offset 9
-//  Each slot: [key_len:2][key:key_len][val_len:2][val:val_len]  (leaf)
-//             [key_len:2][key:key_len][child_page:4]            (internal)
+// Page layout (offsets in bytes):
+//  [0]     uint8_t   is_leaf
+//  [1..4]  uint32_t  num_keys
+//  [5..8]  uint32_t  parent_page_id
+//  [9..12] uint32_t  right_sibling_id  (leaf only; INVALID_PAGE for internal)
+//  Keys/values start at offset 13
+//  Leaf slot:     [key_len:2][key:N][val_len:2][val:M]
+//  Internal slot: [key_len:2][key:N][child_page:4]
 
-static constexpr uint32_t BTREE_ORDER = 10;  // max keys per node
+// Why BTREE_ORDER=8: each leaf holds up to 7 key-value pairs before split.
+// With 4KB pages and variable-length keys, 8 gives headroom without
+// wasting pages on near-empty nodes during initial load.
+static constexpr uint32_t BTREE_ORDER = 8;
 
 struct BTreeNode {
     bool                      is_leaf;
     uint32_t                  page_id;
     uint32_t                  parent_id;
+    uint32_t                  right_sibling;  // INVALID_PAGE if none
     std::vector<std::string>  keys;
-    std::vector<std::string>  values;       // leaf only
-    std::vector<uint32_t>     children;     // internal only
+    std::vector<std::string>  values;         // leaf only
+    std::vector<uint32_t>     children;       // internal only
 };
 
 class BTree {
@@ -30,6 +35,9 @@ public:
     void        insert(const std::string& key, const std::string& value);
     std::optional<std::string> search(const std::string& key);
     bool        remove(const std::string& key);
+
+    // Returns all key-value pairs where from <= key <= to,
+    // walking the leaf chain via right_sibling pointers.
     std::vector<std::pair<std::string,std::string>>
                 scan(const std::string& from, const std::string& to);
 
@@ -52,7 +60,9 @@ private:
                                 const std::string& push_up_key);
     uint32_t  findLeaf(const std::string& key);
 
-    // Page serialization
+    // Rebalance after deletion: borrow from sibling or merge
+    void      fixUnderflow(BTreeNode& node);
+
     void      serializeNode(const BTreeNode& node, Page& page);
     BTreeNode deserializeNode(const Page& page, uint32_t page_id);
 };
